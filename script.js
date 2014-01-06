@@ -215,7 +215,7 @@
 /////-- }
 
 
-function Tweet(t, urlEntity, container) {
+function Tweet(t, urlEntity, container, add_by) {
     this.text = t.text;
     this.retweets = t.retweet_count;
     this.img = t.user.profile_image_url;
@@ -223,9 +223,10 @@ function Tweet(t, urlEntity, container) {
     this.accountname = t.user.screen_name;
     this.id = t.id_str;
     this.link = urlEntity.expanded_url;
+    this.debug = true;
     // this.embedCacheUrl = 'http://instacurate.com/embed-cache.php?url=';
     // I used my own embed.ly API-Key so instacurate.com wont run into rate limits
-    this.embedCacheUrl = 'http://api.embed.ly/1/oembed?key=INSERTYOUROWNKEY&url=';
+    this.embedCacheUrl = 'http://api.embed.ly/1/oembed?key=ab0fdaa34f634136bf4eb2325e040527&url=';
 
 	var date = new Date(t.created_at);
 	var months = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
@@ -249,11 +250,11 @@ function Tweet(t, urlEntity, container) {
                 tw.author_url = embed.author_url;
                 tw.type = embed.type; // used to distinguish links from audio and video
                 tw.multimedia = embed.html;
-                tw.render(container);
+                tw.render(container, add_by);
             }
         });
     },
-    this.render = function(container) {
+    this.render = function(container, add_by) {
 
         var blocked = ["Img", "Img.ly", "Mediagazer"];
 
@@ -261,7 +262,7 @@ function Tweet(t, urlEntity, container) {
             // exclude blocked providers
             //
             //cache teaser DOM elements for faster access
-            var $teaser = $('<div class="teaser"/>'),
+            var $teaser = $('<li class="teaser"/>'),
                 $media = $('<div class="media" />'),
                 $article = $('<article class="article" />'),
                 $title = $('<h3 />'),
@@ -329,10 +330,15 @@ function Tweet(t, urlEntity, container) {
                 $tweetLink.append(", " + this.retweets + " retweets.")
             }
             // add tweet to the dom
-            container.append($teaser);
+            if(add_by == 'prepend') {
+                container.prepend($teaser);
+            } else {
+                container.append($teaser);
+            }
+            if(this.debug) console.log('Adding new Tweet '+this.id+' by '+add_by+'.');
         }
     };
-    this.init(urlEntity.expanded_url, container);
+    this.init(urlEntity.expanded_url, container, add_by);
 }
 
 function TimeLine(query) {
@@ -341,16 +347,20 @@ function TimeLine(query) {
     this.nrOfProcessedLinks = 0;
     this.tweetsToFetch = 200;
     this.minNrOfLinks = 12;
-    this.lastTweetId = 1;
+    this.maxTweetId = 1;
+    this.minTweetId = 0;
     this.isLoggedIn = false;
     this.loggedInUser = null;
     this.processing = false;
     this.rawTweets = [];
     this.twitterMaxSearchApiRequests = 10;
     this.autoRefresh = true;
-    this.autoRefreshInterval = 60000;
+    this.autoRefreshInterval = 30000;
     this.autoRefreshTimer = null;
     this.appServerUrl = "http://tlinkstimeline.appspot.com";
+    this.debug = true;
+    this.container = "#embeds";
+
     this.isLoggedInCallback = function() {
         $(".signin").toggleClass('hide');
         $('.twi').html("Here's your personalised news site, based on your Twitter timeline.");
@@ -391,21 +401,25 @@ function TimeLine(query) {
         }
     };
 
-    this.fetchTweetsForQuery = function() {
+    this.fetchTweetsForQuery = function(update) { // if update, get newer tweets instead of older
+        var update = update?true:false;
         var tl = this;
         tl.processing = true;
         var params = {
             'include_entities': true,
             'include_rts': true,
-            'since_id': tl.lastTweetId,
-            'count' : tl.tweetsToFetch,
+            'count' : tl.tweetsToFetch
         };
+        // set since_id or max_id parameter depeding on querying an update or e.g. scroll load
+        if(update) params['since_id'] = tl.maxTweedId;
+        else if(tl.minTweetId > 0) params['max_id'] = tl.minTweetId;
+
         if (tl.query === 'owntimeline') {
             $.getJSON(tl.appServerUrl + "/statuses/home_timeline.json?callback=?", params, function(data) {
                 tl.rawTweets = tl.rawTweets.concat(data.reverse());
-                tl._processTweets();
+                tl._processTweets(update);
                 if (tl.nrOfProcessedLinks < tl.minNrOfLinks) {
-                    tl.fetchTweetsForQuery();
+                    tl.fetchTweetsForQuery(update);
                 } else {
                     tl.finishedFetchTweetsForQuery();
                 }
@@ -417,9 +431,9 @@ function TimeLine(query) {
 	        $.getJSON('https://api.twitter.com/1.1/lists/statuses.json?callback=?', params, function(data) {
                 // request needs to go to the server script
                 tl.rawTweets = tl.rawTweets.concat(data.reverse());
-                tl._processTweets();
+                tl._processTweets(update);
                 if (tl.nrOfProcessedLinks < tl.minNrOfLinks) {
-                    tl.fetchTweetsForQuery();
+                    tl.fetchTweetsForQuery(update);
                 } else {
                     tl.finishedFetchTweetsForQuery();
                 }
@@ -429,30 +443,22 @@ function TimeLine(query) {
             $.getJSON(tl.appServerUrl + '/statuses/user_timeline.json?&callback=?', params, function(data) {
                 // request needs to go to the server script
                 tl.rawTweets = tl.rawTweets.concat(data.reverse());
-                tl._processTweets();
+                tl._processTweets(update);
                 if (tl.nrOfProcessedLinks < tl.minNrOfLinks) {
-                    tl.fetchTweetsForQuery();
+                    tl.fetchTweetsForQuery(update);
                 } else {
                     tl.finishedFetchTweetsForQuery();
                 }
             });
         } else {
             params['q'] = tl.query + " filter:links";
-            if (tl.lastTweetId !== 1) {
-                //get next 100 tweets with tweetid <= last tweetid from previous search request
-                //i.e. 100 tweets written before last tweet we got from search api before
-                params['max_id'] = tl.lastTweetId;
-                //btw: we'll receive the last tweet again. we should use since_id - 1,
-                //but since JavaScript can't handle 64 bit integers natively there's no easy way to do this.
-                //it's not perfect but since we're checking for duplicate links in process_data anyway it doesn't matter.
-            }
             $.getJSON('https://api.twitter.com/1.1/search/tweets.json?callback=?', params, function(data) {
                     // request needs to go to the server script
                     tl.rawTweets = tl.rawTweets.concat(data.reverse());
                     //decrement the search api request counter. we don't wanna send too many requests (limited by maxSearchApiRequests)
                     var nrOfFetchedTweets = data.results.length;
                     if (nrOfFetchedTweets > 0) {
-                        tl._processTweets();
+                        tl._processTweets(update);
                         tl.twitterMaxSearchApiRequests--;
                     } else {
                         tl.twitterMaxSearchApiRequests = 0;
@@ -461,7 +467,7 @@ function TimeLine(query) {
                     //we didn't use the API more than maxSearchApiRequests times AND
                     //the last api called contained tweets
                     if (tl.twitterMaxSearchApiRequests > 0 && tl.nrOfProcessedLinks < tl.minNrOfLinks) {
-                        tl.fetchTweetsForQuery();
+                        tl.fetchTweetsForQuery(update);
                     } else {
                         tl.finishedFetchTweetsForQuery();
                     }
@@ -469,35 +475,46 @@ function TimeLine(query) {
         }
     };
 
-    this._processTweets = function() {
+    this._processTweets = function(update) {
+        var update = update?true:false;
         var tl = this;
         var n = tl.minNrOfLinks;
+        var nrOfProcessedLinks = 0;
+        // update minTweetId or maxTweetId with first processed Tweet Id depeding on an update being processed or not
+        if(update) tl.maxTweetId = tl.rawTweets[tl.rawTweets.length - 1].id_str;
+        else tl.minTweetId = tl.rawTweets[0].id_str;
         while (n && tl.rawTweets.length > 0) {
-            var t = tl.rawTweets.pop();
+            var t = update?tl.rawTweets.pop():tl.rawTweets.shift();
             if (typeof t === 'undefined') {
                 break;
             }
             //cache container DOM element
-            var embedCols = $('#embeds div.column');
-            var nrOfEmbedCols = embedCols.length;
-
+            
             $.each(t.entities.urls, function(i, urlEntity) {
                 var url = urlEntity.expanded_url;
+                // exclude duplicate links and links from @-replies
                 if (typeof tl.processedTweets[url] === 'undefined' && t.text[0] !== '@') {
-                    // exclude duplicate links and links from @-replies
-                    tl.nrOfProcessedLinks++;
+                    nrOfProcessedLinks++;
                     n -= 1;
-                    var c = (tl.nrOfProcessedLinks -1) % nrOfEmbedCols;
-                    var $container = $(embedCols[c]);
-                    tl.lastTweetId = t.id_str; // store the last TweetId
-                    tl.processedTweets[url] = new Tweet(t, urlEntity, $container);
+                    tl.processedTweets[url] = new Tweet(t, urlEntity, $(tl.container), update?'prepend':'append');
                     if (n == 0) {
                         return false;
                     }
                 }
             });
         }
-    };
+        tl.nrOfProcessedLinks += nrOfProcessedLinks;
+        if(tl.debug) {
+	        console.log('Found '+nrOfProcessedLinks+' new stories. ');
+	        console.log('Most recent Tweet Id: '+tl.maxTweetId+'; oldest Tweet Id: '+tl.minTweetId);
+	    }
+	};
+
+    this._compareTweetIds = function(id_1, id_2) {
+        if (id_1.length < id_2.length) return -1;
+        else if (id_1.length > id_2.length) return 1;
+        else return id_1.localCompare(id_2);
+    }
 
     this.finishedFetchTweetsForQuery = function() {
         //get rid of loading message if loading class is still applied
@@ -507,11 +524,12 @@ function TimeLine(query) {
         var tl = this;
         tl.processing = false;
 
-        tl.autoRefreshTimer = setTimeout(function() {
-            if (tl.autoRefresh) {
-                tl.fetchTweetsForQuery();
-            }
-        }, tl.autoRefreshInterval);
+	    if (tl.autoRefresh) {
+	        tl.autoRefreshTimer = setTimeout(function() {
+	        	if(tl.debug) console.log('Auto-refreshing …');
+	            tl.fetchTweetsForQuery(true);
+	        }, tl.autoRefreshInterval);
+	    }
 
     }
 
