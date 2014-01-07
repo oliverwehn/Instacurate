@@ -345,14 +345,14 @@ function TimeLine(query) {
     this.query = query;
     this.processedTweets = {};
     this.nrOfProcessedLinks = 0;
-    this.tweetsToFetch = 200;
+    this.tweetsToFetch = 50;
     this.minNrOfLinks = 12;
     this.maxTweetId = 1;
     this.minTweetId = 0;
     this.isLoggedIn = false;
     this.loggedInUser = null;
     this.processing = false;
-    this.rawTweets = [];
+    this.rawTweets = { 'up': [], 'down': [] };
     this.twitterMaxSearchApiRequests = 10;
     this.autoRefresh = true;
     this.autoRefreshInterval = 30000;
@@ -404,19 +404,21 @@ function TimeLine(query) {
     this.fetchTweetsForQuery = function(update) { // if update, get newer tweets instead of older
         var update = update?true:false;
         var tl = this;
+        var rawTweets = tl.rawTweets[update?'up':'down'];
         tl.processing = true;
         var params = {
             'include_entities': true,
             'include_rts': true,
             'count' : tl.tweetsToFetch
         };
+        if(tl.debug) console.log('Fetching Tweets for query "'+tl.query+'"'+(update?' as an update.':''));
         // set since_id or max_id parameter depeding on querying an update or e.g. scroll load
         if(update) params['since_id'] = tl.maxTweedId;
         else if(tl.minTweetId > 0) params['max_id'] = tl.minTweetId;
 
         if (tl.query === 'owntimeline') {
             $.getJSON(tl.appServerUrl + "/statuses/home_timeline.json?callback=?", params, function(data) {
-                tl.rawTweets = tl.rawTweets.concat(data.reverse());
+                tl.rawTweets[update?'up':'down'] = update?data.concat(rawTweets):rawTweets.concat(data);
                 tl._processTweets(update);
                 if (tl.nrOfProcessedLinks < tl.minNrOfLinks) {
                     tl.fetchTweetsForQuery(update);
@@ -430,7 +432,7 @@ function TimeLine(query) {
             params['owner_screen_name'] = tl.loggedInUser;
 	        $.getJSON('https://api.twitter.com/1.1/lists/statuses.json?callback=?', params, function(data) {
                 // request needs to go to the server script
-                tl.rawTweets = tl.rawTweets.concat(data.reverse());
+                tl.rawTweets[update?'up':'down'] = update?data.concat(rawTweets):rawTweets.concat(data);
                 tl._processTweets(update);
                 if (tl.nrOfProcessedLinks < tl.minNrOfLinks) {
                     tl.fetchTweetsForQuery(update);
@@ -442,7 +444,7 @@ function TimeLine(query) {
             params['screen_name'] = tl.query.substring(1,100);
             $.getJSON(tl.appServerUrl + '/statuses/user_timeline.json?&callback=?', params, function(data) {
                 // request needs to go to the server script
-                tl.rawTweets = tl.rawTweets.concat(data.reverse());
+                tl.rawTweets[update?'up':'down'] = update?data.concat(rawTweets):rawTweets.concat(data);
                 tl._processTweets(update);
                 if (tl.nrOfProcessedLinks < tl.minNrOfLinks) {
                     tl.fetchTweetsForQuery(update);
@@ -454,7 +456,7 @@ function TimeLine(query) {
             params['q'] = tl.query + " filter:links";
             $.getJSON('https://api.twitter.com/1.1/search/tweets.json?callback=?', params, function(data) {
                     // request needs to go to the server script
-                    tl.rawTweets = tl.rawTweets.concat(data.reverse());
+                    tl.rawTweets[update?'up':'down'] = update?data.concat(rawTweets):rawTweets.concat(data);
                     //decrement the search api request counter. we don't wanna send too many requests (limited by maxSearchApiRequests)
                     var nrOfFetchedTweets = data.results.length;
                     if (nrOfFetchedTweets > 0) {
@@ -480,11 +482,16 @@ function TimeLine(query) {
         var tl = this;
         var n = tl.minNrOfLinks;
         var nrOfProcessedLinks = 0;
+        var rawTweets = tl.rawTweets[update?'up':'down'];
         // update minTweetId or maxTweetId with first processed Tweet Id depeding on an update being processed or not
-        if(update) tl.maxTweetId = tl.rawTweets[tl.rawTweets.length - 1].id_str;
-        else tl.minTweetId = tl.rawTweets[0].id_str;
-        while (n && tl.rawTweets.length > 0) {
-            var t = update?tl.rawTweets.pop():tl.rawTweets.shift();
+        if(tl.debug) console.log('Tweet Ids: [first] => '+rawTweets[0].id_str+', [last] => '+rawTweets[rawTweets.length - 1].id_str);
+        if(update) tl.maxTweetId = rawTweets[0].id_str; 
+        else {
+            tl.minTweetId = rawTweets[rawTweets.length - 1].id_str; 
+            if(tl.maxTweetId == 1) tl.maxTweetId = rawTweets[0].id_str;
+        }
+        while (n && rawTweets.length > 0) {
+            var t = update?rawTweets.pop():rawTweets.shift();
             if (typeof t === 'undefined') {
                 break;
             }
@@ -504,6 +511,7 @@ function TimeLine(query) {
             });
         }
         tl.nrOfProcessedLinks += nrOfProcessedLinks;
+        tl.rawTweets[update?'up':'down'] = rawTweets;
         if(tl.debug) {
 	        console.log('Found '+nrOfProcessedLinks+' new stories. ');
 	        console.log('Most recent Tweet Id: '+tl.maxTweetId+'; oldest Tweet Id: '+tl.minTweetId);
